@@ -82,7 +82,7 @@ function heartbeat() {
         }
 
         updateStatsUI(total);
-        console.log("Current Watch Time:", total, "Limit:", config.triggerThreshold);
+        //debug console.log("Current Watch Time:", total, "Limit:", config.triggerThreshold);
     });
 }
 
