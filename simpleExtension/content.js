@@ -1,25 +1,18 @@
-// --- 1. Global State & Config ---
+// --- 1. Global Configuration & State ---
 let config = {
-    triggerThreshold: 1800, // 30 mins (in seconds)
-    timeoutDuration: 1200   // 20 mins (in seconds)
+    triggerThreshold: 1800, 
+    timeoutDuration: 1200   
 };
 
-let localState = {
-    isTimedOut: false,
-    accumulatedSession: 0,
-    startTime: Date.now(),
-    lastDate: new Date().getDate()
-};
+let isCurrentlyLocked = false;
 
-// --- 2. Storage Initialization & Sync ---
-function initializeStorage() {
-    chrome.storage.local.get(['config', 'timeoutExpiry', 'totalSeconds', 'lastDate'], (res) => {
-        if (res.config) config = res.config;
+// --- 2. Storage Initialization & Listeners ---
+function initSync() {
+    chrome.storage.local.get(['config', 'timeoutExpiry', 'totalSecondsToday', 'lastDate'], (data) => {
+        if (data.config) config = data.config;
         
-        const now = Date.now();
-        // Check if we are currently in a global timeout period
-        if (res.timeoutExpiry && now < res.timeoutExpiry) {
-            triggerTimeoutUI(res.timeoutExpiry);
+        if (data.timeoutExpiry && data.timeoutExpiry > Date.now()) {
+            showTimeoutUI(data.timeoutExpiry);
         }
     });
 }
@@ -28,48 +21,98 @@ chrome.storage.onChanged.addListener((changes) => {
     if (changes.config) config = changes.config.newValue;
     
     if (changes.timeoutExpiry) {
-        const newExpiry = changes.timeoutExpiry.newValue;
-        if (newExpiry > Date.now()) {
-            triggerTimeoutUI(newExpiry);
+        const expiry = changes.timeoutExpiry.newValue;
+        if (expiry && expiry > Date.now()) {
+            showTimeoutUI(expiry);
         } else {
-            removeTimeoutUI();
+            hideTimeoutUI();
         }
     }
 });
 
-// --- 3. Timeout Logic ---
+// --- 3. The Core Timer (The Heartbeat) ---
+// --- Updated Heartbeat for better Sync ---
+function heartbeat() {
+    // Only the tab you are currently looking at should "drive" the timer
+    // This prevents multiple tabs from doubling or tripling the watch time
+    if (document.hidden) return;
 
-function triggerTimeoutUI(expiryTimestamp) {
-    if (localState.isTimedOut) return;
-    localState.isTimedOut = true;
+    chrome.storage.local.get(['timeoutExpiry', 'totalSecondsToday', 'lastDate'], (data) => {
+        const now = Date.now();
+        const today = new Date().getDate();
 
-    // Pause YouTube Video
+        // 1. Check if we are currently in a global timeout
+        if (data.timeoutExpiry && data.timeoutExpiry > now) {
+            updateCountdownText(data.timeoutExpiry);
+            // Ensure the UI is showing if it's not already
+            if (!isCurrentlyLocked) showTimeoutUI(data.timeoutExpiry);
+            return; 
+        } else if (data.timeoutExpiry && data.timeoutExpiry <= now) {
+            // Timeout finished!
+            chrome.storage.local.remove('timeoutExpiry');
+            hideTimeoutUI();
+            return;
+        }
+
+        // 2. Calculate Watch Time
+        let total = data.totalSecondsToday || 0;
+        
+        // Reset if date changed
+        if (data.lastDate !== today) {
+            total = 0;
+        } else {
+            total += 1; // Increment by 1 second
+        }
+        
+        // 3. Check against threshold
+        if (total >= config.triggerThreshold) {
+            const expiry = now + (config.timeoutDuration * 1000);
+            // Trigger timeout globally
+            chrome.storage.local.set({ 
+                timeoutExpiry: expiry,
+                totalSecondsToday: 0,
+                lastDate: today
+            });
+        } else {
+            // Regular update
+            chrome.storage.local.set({ 
+                totalSecondsToday: total, 
+                lastDate: today 
+            });
+        }
+
+        updateStatsUI(total);
+        console.log("Current Watch Time:", total, "Limit:", config.triggerThreshold);
+    });
+}
+
+// --- 4. Original Timeout UI (Restored Styling) ---
+function showTimeoutUI(expiry) {
+    if (isCurrentlyLocked) return;
+    isCurrentlyLocked = true;
+
     const player = document.getElementById('movie_player');
     if (player && player.pauseVideo) player.pauseVideo();
-
-    if (document.getElementById('my-pro-timeout-cover')) return;
 
     const ringRadius = 90;
     const ringCircumference = 2 * Math.PI * ringRadius;
     const totalMs = config.timeoutDuration * 1000;
-    const remainingMs = expiryTimestamp - Date.now();
-    
-    // Calculate starting offset based on remaining time for sync
-    const startOffset = ringCircumference - ( (remainingMs / totalMs) * ringCircumference );
+    const remainingMs = expiry - Date.now();
+    const initialOffset = ringCircumference - ((remainingMs / totalMs) * ringCircumference);
 
     const cover = document.createElement('div');
     cover.id = 'my-pro-timeout-cover';
     cover.innerHTML = `
         <div style="text-align: center; position: relative; width: 250px; height: 250px; display: flex; align-items: center; justify-content: center;">
             <svg style="position: absolute; transform: rotate(-90deg); overflow: visible;" width="200" height="200">
-                <circle cx="100" cy="100" r="${ringRadius}" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="8" />
-                <circle id="my-timeout-ring-progress" cx="100" cy="100" r="${ringRadius}" fill="none" stroke="white" stroke-width="8" stroke-linecap="round"
-                        style="stroke-dasharray: ${ringCircumference}; stroke-dashoffset: ${startOffset}; transition: stroke-dashoffset ${remainingMs}ms linear;" />
+                <circle cx="100" cy="100" r="${ringRadius}" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="10" />
+                <circle id="my-timeout-ring-progress" cx="100" cy="100" r="${ringRadius}" fill="none" stroke="white" stroke-width="10" stroke-linecap="round"
+                        style="stroke-dasharray: ${ringCircumference}; stroke-dashoffset: ${initialOffset}; transition: stroke-dashoffset ${remainingMs}ms linear;" />
             </svg>
             <div style="position: relative; z-index: 10;">
                 <h1 style="font-size: 5rem; margin: 0;">🌿</h1>
                 <p style="font-size: 1.8rem; font-family: Roboto, Arial; margin: 10px 0 0 0; font-weight: 500;">Touch Grass</p>
-                <p id="timeout-countdown" style="font-size: 1rem; opacity: 0.7; margin-top: 5px;"></p>
+                <p id="timeout-countdown" style="font-size: 1rem; opacity: 0.7; margin-top: 5px; font-family: Roboto, Arial;"></p>
             </div>
         </div>
     `;
@@ -78,77 +121,38 @@ function triggerTimeoutUI(expiryTimestamp) {
     document.body.appendChild(cover);
     document.body.style.overflow = 'hidden';
 
-    // Trigger animation to end
     requestAnimationFrame(() => {
         const ring = document.getElementById('my-timeout-ring-progress');
         if (ring) ring.style.strokeDashoffset = ringCircumference;
     });
 }
 
-function removeTimeoutUI() {
+function updateCountdownText(expiry) {
+    const cd = document.getElementById('timeout-countdown');
+    if (!cd) return;
+    const diff = Math.ceil((expiry - Date.now()) / 1000);
+    cd.textContent = `${Math.floor(diff / 60)}m ${diff % 60}s remaining`;
+}
+
+function hideTimeoutUI() {
     const cover = document.getElementById('my-pro-timeout-cover');
     if (cover) cover.remove();
     document.body.style.overflow = '';
-    localState.isTimedOut = false;
-    localState.accumulatedSession = 0;
-    localState.startTime = Date.now();
+    isCurrentlyLocked = false;
 }
 
-// --- 4. Core Timer ---
-function runCoreTimer() {
-    if (document.hidden) return;
-
-    chrome.storage.local.get(['timeoutExpiry'], (res) => {
-        const now = Date.now();
-
-        // 1. Check if we should still be in timeout
-        if (res.timeoutExpiry) {
-            if (now >= res.timeoutExpiry) {
-                chrome.storage.local.remove('timeoutExpiry');
-                removeTimeoutUI();
-            } else {
-                // Update countdown text if cover exists
-                const cd = document.getElementById('timeout-countdown');
-                if (cd) {
-                    const diff = Math.ceil((res.timeoutExpiry - now) / 1000);
-                    cd.textContent = `${Math.floor(diff / 60)}m ${diff % 60}s remaining`;
-                }
-                return; // Don't count watch time during timeout
-            }
-        }
-
-        // 2. Count watch time
-        let currentSession = localState.accumulatedSession + (now - localState.startTime);
-        
-        if (currentSession >= (config.triggerThreshold * 1000)) {
-            const expiry = now + (config.timeoutDuration * 1000);
-            chrome.storage.local.set({ timeoutExpiry: expiry });
-        }
-
-        // 3. Update Daily Stats
-        updateDailyStats();
-    });
+// --- 5. Original Popout & SVG Widget (Restored Styling) ---
+function updateStatsUI(totalSeconds) {
+    const timedom = document.getElementById('time');
+    if (timedom) timedom.textContent = Math.round(totalSeconds / 60) + " mins watched today";
 }
 
-function updateDailyStats() {
-    const today = new Date().getDate();
-    chrome.storage.local.get(['totalSeconds', 'lastDate'], (res) => {
-        let total = res.totalSeconds || 0;
-        if (res.lastDate !== today) {
-            total = 0;
-        }
-        total += 1;
-        chrome.storage.local.set({ totalSeconds: total, lastDate: today });
-        updateUI(total);
-    });
-}
-
-// --- 5. Popout & UI ---
 function injectProWidget() {
     const micButton = document.querySelector('#voice-search-button');
     if (!micButton || document.getElementById('my-pro-widget-container')) return;
 
     micButton.style.display = 'none';
+
     const container = document.createElement('div');
     container.id = 'my-pro-widget-container';
     container.style.cssText = `position: relative; display: inline-block;`;
@@ -164,8 +168,8 @@ function injectProWidget() {
     popout.innerHTML = `
         <div style="padding: 16px; border-bottom: 1px solid var(--yt-spec-10-percent-layer);">
             <strong style="display: block; margin-bottom: 4px;">Youtube Timeout</strong>
-            <p style="font-size: 12px; color: var(--yt-spec-text-secondary);" id="ui-date">${new Date().toLocaleDateString()}</p>
-            <p style="font-size: 12px; color: var(--yt-spec-text-secondary);" id="ui-time">0 mins watched today</p>
+            <p style="font-size: 12px; color: var(--yt-spec-text-secondary);" id="date">${new Date().toLocaleDateString()}</p>
+            <p style="font-size: 12px; color: var(--yt-spec-text-secondary);" id="time">0 mins watched today</p>
         </div>
         <div style="padding: 16px; display: flex; flex-direction: column; gap: 12px;">
             <div>
@@ -187,9 +191,8 @@ function injectProWidget() {
     micButton.parentNode.insertBefore(container, micButton);
 
     document.getElementById('save-cfg').onclick = () => {
-        const t = parseInt(document.getElementById('cfg-trigger').value);
-        const d = parseInt(document.getElementById('cfg-duration').value);
-        config = { triggerThreshold: t, timeoutDuration: d };
+        config.triggerThreshold = parseInt(document.getElementById('cfg-trigger').value);
+        config.timeoutDuration = parseInt(document.getElementById('cfg-duration').value);
         chrome.storage.local.set({ config });
         const btn = document.getElementById('save-cfg');
         btn.textContent = "Saved!";
@@ -197,25 +200,12 @@ function injectProWidget() {
     };
 }
 
-function updateUI(totalSeconds) {
-    const timedom = document.getElementById('ui-time');
-    if (timedom) timedom.textContent = Math.round(totalSeconds / 60) + " mins watched today";
-}
-
-// --- 6. Lifecycle ---
-document.addEventListener('visibilitychange', () => {
-    if (document.hidden) {
-        localState.accumulatedSession += (Date.now() - localState.startTime);
-    } else {
-        localState.startTime = Date.now();
-    }
-});
-
+// --- 6. Init ---
 window.addEventListener('click', () => {
-    const popout = document.getElementById('my-pro-popout');
-    if (popout) popout.style.display = 'none';
+    const pop = document.getElementById('my-pro-popout');
+    if (pop) pop.style.display = 'none';
 });
 
-initializeStorage();
+initSync();
 setInterval(injectProWidget, 2000);
-setInterval(runCoreTimer, 1000);
+setInterval(heartbeat, 1000);

@@ -1,7 +1,10 @@
 {
   "manifest_version": 3,
   "name": "Youtube Timeout",
-  "version": "1.2.1",
+  "version": "1.2.4",
+  "icons":{
+    "128": "ExtensionLogo.png"
+  },
   "permissions": ["storage"],
   "description": "Times out youtube",
   "content_scripts": [
