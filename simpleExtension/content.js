@@ -8,7 +8,7 @@ let isCurrentlyLocked = false;
 
 // --- 2. Storage Initialization & Listeners ---
 function initSync() {
-    chrome.storage.local.get(['config', 'timeoutExpiry', 'totalSecondsToday', 'lastDate'], (data) => {
+    chrome.storage.local.get(['config', 'timeoutExpiry', 'totalSecondsToday', 'lastDate', 'timeSoFar'], (data) => {
         if (data.config) config = data.config;
         
         if (data.timeoutExpiry && data.timeoutExpiry > Date.now()) {
@@ -30,14 +30,19 @@ chrome.storage.onChanged.addListener((changes) => {
     }
 });
 
+function isUserActive() {
+  return navigator.userActivation?.hasBeenActive ?? false;
+}
+
 // --- 3. The Core Timer (The Heartbeat) ---
 // --- Updated Heartbeat for better Sync ---
 function heartbeat() {
     // Only the tab you are currently looking at should "drive" the timer
     // This prevents multiple tabs from doubling or tripling the watch time
     if (document.hidden) return;
+    // if (isUserActive()) return;
 
-    chrome.storage.local.get(['timeoutExpiry', 'totalSecondsToday', 'lastDate'], (data) => {
+    chrome.storage.local.get(['timeoutExpiry', 'totalSecondsToday', 'lastDate', 'timeSoFar'], (data) => {
         const now = Date.now();
         const today = new Date().getDate();
 
@@ -56,32 +61,43 @@ function heartbeat() {
 
         // 2. Calculate Watch Time
         let total = data.totalSecondsToday || 0;
+        let timeSoFar = data.timeSoFar || 0 
         
         // Reset if date changed
         if (data.lastDate !== today) {
+            timeSoFar = 0
             total = 0;
         } else {
             total += 1; // Increment by 1 second
+            timeSoFar += 1
         }
         
         // 3. Check against threshold
-        if (total >= config.triggerThreshold) {
+        if (timeSoFar >= config.triggerThreshold) {
             const expiry = now + (config.timeoutDuration * 1000);
             // Trigger timeout globally
             chrome.storage.local.set({ 
                 timeoutExpiry: expiry,
-                totalSecondsToday: 0,
-                lastDate: today
+                lastDate: today,
+                timeSoFar : 0 
             });
         } else {
             // Regular update
             chrome.storage.local.set({ 
                 totalSecondsToday: total, 
-                lastDate: today 
+                lastDate: today,
+                timeSoFar : timeSoFar
             });
         }
 
-        updateStatsUI(total);
+        // Redundant due to the above reset
+        // if (lastDate != today){
+        //     chrome.storage.local.set({
+        //         totalSecondsToday : 0
+        //     })
+        // }
+
+        updateStatsUI(total, timeSoFar, config.triggerThreshold);
         //debug console.log("Current Watch Time:", total, "Limit:", config.triggerThreshold);
     });
 }
@@ -142,9 +158,12 @@ function hideTimeoutUI() {
 }
 
 // --- 5. Original Popout & SVG Widget (Restored Styling) ---
-function updateStatsUI(totalSeconds) {
-    const timedom = document.getElementById('time');
+function updateStatsUI(totalSeconds, timeSoFar, triggerThreshold) {
+    const timedom = document.getElementById('timetotal');
+    const timeleftdom = document.getElementById('timeleft')
     if (timedom) timedom.textContent = Math.round(totalSeconds / 60) + " mins watched today";
+    if (timeleftdom) timeleftdom.textContent = Math.round((triggerThreshold - timeSoFar) / 60) + " mins left"
+    console.log(triggerThreshold, timeSoFar)
 }
 
 function injectProWidget() {
@@ -169,7 +188,9 @@ function injectProWidget() {
         <div style="padding: 16px; border-bottom: 1px solid var(--yt-spec-10-percent-layer);">
             <strong style="display: block; margin-bottom: 4px;">Youtube Timeout</strong>
             <p style="font-size: 12px; color: var(--yt-spec-text-secondary);" id="date">${new Date().toLocaleDateString()}</p>
-            <p style="font-size: 12px; color: var(--yt-spec-text-secondary);" id="time">0 mins watched today</p>
+            <p style="font-size: 12px; color: var(--yt-spec-text-secondary);" id="timetotal">0 mins watched today</p>
+            <p style="font-size: 12px; color: var(--yt-spec-text-secondary);" id="timeleft">0 mins left</p>
+            
         </div>
         <div style="padding: 16px; display: flex; flex-direction: column; gap: 12px;">
             <div>
